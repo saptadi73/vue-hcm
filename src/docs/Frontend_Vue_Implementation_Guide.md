@@ -1,89 +1,89 @@
 # Frontend Vue Implementation Guide
 
-Dokumen ini adalah panduan implementasi frontend Vue.js untuk integrasi dengan FastAPI Face Attendance Service.
+Dokumen ini menjelaskan implementasi frontend Vue.js yang saat ini ada di repo dan kontrak yang dipakai untuk integrasi ke backend HCM/Odoo.
 
-## 1. Tujuan Frontend
+## 1. Scope Saat Ini
 
-Frontend bertanggung jawab untuk:
+Frontend ini fokus pada:
 
-- capture stream kamera
-- capture koordinat GPS user/device saat attendance
-- melakukan quality gate ringan sebelum upload
-- kirim image ke endpoint enrollment/attendance
-- menampilkan feedback real-time ke user
-- menangani retry dan status error secara jelas
+- absensi wajah dengan kamera dan GPS
+- riwayat absensi dengan filter employee dan tanggal
+- scaffold halaman request ijin dan cuti
+- shell navigasi untuk mobile dan desktop
 
-## 2. Stack yang Direkomendasikan
+Bagian enrollment wajah yang ada di versi lama guide ini sudah tidak dipakai di struktur repo saat ini.
+
+## 2. Stack dan Struktur
+
+Stack yang dipakai:
 
 - Vue 3 + Composition API
 - Vite
-- Pinia (state management)
-- Axios atau Fetch wrapper
-- OpenCV.js (opsional untuk precheck)
+- Pinia
+- Vue Router
+- Fetch wrapper berbasis `requestApi`
+- Tailwind CSS 4
 
-## 3. Struktur Folder Frontend yang Disarankan
+Struktur yang relevan saat ini:
 
 ```text
 src/
 ├── api/
-│   ├── client.ts
-│   ├── attendance.ts
-│   └── enroll.ts
 ├── components/
 │   ├── camera/
-│   │   ├── CameraPreview.vue
-│   │   ├── FaceGuideOverlay.vue
-│   │   └── QualityIndicator.vue
 │   └── common/
-├── views/
-│   ├── EnrollView.vue
-│   ├── AttendanceView.vue
-│   └── DeviceSetupView.vue
-├── stores/
-│   ├── camera.store.ts
-│   ├── enroll.store.ts
-│   └── attendance.store.ts
 ├── composables/
-│   ├── useCamera.ts
-│   ├── useCapture.ts
-│   └── useQualityCheck.ts
+├── modules/
+│   ├── attendance/
+│   ├── history/
+│   ├── leave/
+│   └── requests/
+├── router/
+├── stores/
 └── types/
-    └── api.ts
 ```
+
+## 3. Route Aktif
+
+Router saat ini mengarah ke:
+
+- `/attendance` untuk absensi
+- `/permission` untuk request ijin
+- `/leave` untuk request cuti
+- `/history` untuk riwayat absensi
+
+Root `/` redirect ke `/attendance`.
+
+`AppShell` menyediakan navigasi desktop dan mobile, serta judul halaman berdasarkan route aktif.
 
 ## 4. Konfigurasi Environment
 
-Contoh `.env` frontend:
+Environment variable yang dipakai frontend saat ini:
 
 ```env
 VITE_API_BASE_URL=http://127.0.0.1:8000
-VITE_CAPTURE_FORMAT=image/png
-VITE_CAPTURE_QUALITY=0.9
-VITE_SAMPLE_MIN_COUNT=5
 VITE_REQUEST_TIMEOUT_MS=15000
+VITE_CAPTURE_FORMAT=image/jpeg
+VITE_CAPTURE_QUALITY=0.9
 VITE_GEOLOCATION_ENABLE_HIGH_ACCURACY=true
 VITE_GEOLOCATION_TIMEOUT_MS=10000
 ```
 
-## 5. Kontrak API yang Digunakan Frontend
+Catatan:
 
-Endpoint utama:
+- `VITE_CAPTURE_FORMAT` dan `VITE_CAPTURE_QUALITY` dipakai oleh `useCamera()` saat membuat base64 frame.
+- `VITE_GEOLOCATION_ENABLE_HIGH_ACCURACY` dan `VITE_GEOLOCATION_TIMEOUT_MS` dipakai oleh `useGeolocation()`.
+- `VITE_REQUEST_TIMEOUT_MS` dipakai oleh `requestApi()`.
 
-- `POST /api/v1/face/enroll/start`
-- `POST /api/v1/face/enroll/sample`
-- `POST /api/v1/face/enroll/finish`
-- `GET /api/v1/face/enroll/{employee_id}`
-- `POST /api/v1/attendance/checkin`
-- `POST /api/v1/attendance/checkout`
-- `GET /api/v1/attendance/history`
+## 5. Kontrak API Yang Dipakai
 
-Envelope response standar:
+API client saat ini memakai envelope standar:
 
 ```json
 {
   "success": true,
-  "code": "SAMPLE_SAVED",
-  "message": "Sample saved",
+  "code": "OK",
+  "message": "Success",
   "data": {},
   "errors": null,
   "meta": null,
@@ -91,50 +91,22 @@ Envelope response standar:
 }
 ```
 
-## 6. Alur Enrollment di Frontend
+Endpoint yang aktif di frontend:
 
-1. User memilih employee.
-2. Frontend panggil `enroll/start`.
-3. Frontend capture beberapa frame (target minimal 5 accepted sample).
-4. Tiap frame dikirim ke `enroll/sample`.
-5. Frontend baca hasil accepted/rejected dari response.
-6. Jika accepted mencukupi, panggil `enroll/finish`.
+- `POST /api/v1/attendance/checkin`
+- `POST /api/v1/attendance/checkout`
+- `GET /api/v1/attendance/history`
 
-Data penting dari `enroll/sample` response:
+Query opsional untuk history:
 
-- `data.accepted`
-- `data.blur_score`
-- `data.brightness_score`
-- `data.storage.local_url`
-- `data.storage.object_url`
-- `data.storage.odoo_attachment_id`
+- `employee_id`
 
-## 7. Alur Attendance di Frontend
-
-1. User pilih aksi checkin/checkout.
-2. Ambil koordinat GPS via browser geolocation API.
-3. Capture satu frame berkualitas baik.
-4. Kirim image + koordinat GPS ke endpoint attendance.
-5. Tampilkan hasil:
-   - matched / not matched
-   - employee_id
-   - similarity
-   - status
-  - status lokasi jika dikembalikan sistem Odoo/backend
-
-Rekomendasi flow bisnis frontend:
-
-- jangan izinkan submit attendance jika permission lokasi ditolak
-- jangan izinkan submit jika `coords` belum tersedia
-- jika akurasi terlalu buruk, tampilkan peringatan dan minta user retry
-- kirim metadata GPS apa adanya ke backend, biarkan Odoo menentukan valid/tidak berdasarkan radius
-
-Payload attendance yang direkomendasikan dari frontend:
+Payload absensi yang dipakai:
 
 ```json
 {
   "device_code": "CAM-001",
-  "image_base64": "...",
+  "image_base64": "data:image/jpeg;base64,...",
   "latitude": -6.1753924,
   "longitude": 106.8271528,
   "gps_accuracy_meters": 8.75,
@@ -142,142 +114,178 @@ Payload attendance yang direkomendasikan dari frontend:
 }
 ```
 
-Contoh field response attendance yang harus di-handle frontend:
+Field response yang harus di-handle frontend:
 
-```json
-{
-  "attempt_id": 3,
-  "action": "checkin",
-  "matched": true,
-  "employee_id": "EMP001",
-  "similarity": 0.98,
-  "quality_score": 3200.5,
-  "status": "success",
-  "latitude": -6.1753924,
-  "longitude": 106.8271528,
-  "gps_accuracy_meters": 8.75
-}
-```
+- `attempt_id`
+- `action`
+- `matched`
+- `employee_id`
+- `similarity`
+- `quality_score`
+- `status`
+- `latitude`
+- `longitude`
+- `gps_accuracy_meters`
+- `gps_provider`
+- `location_status`
+- `attendance_id`
+- `reason`
 
-## 8. Implementasi Camera Composable (Konsep)
+Field history yang dipakai di UI:
 
-`useCamera.ts` sebaiknya menyediakan:
+- `id`
+- `employee_id`
+- `status`
+- `check_time_utc`
+- `confidence`
+- `similarity`
+- `latitude`
+- `longitude`
+- `gps_accuracy_meters`
+- `gps_provider`
+- `location_status`
+
+## 6. Alur Attendance
+
+Alur pada [AttendanceView.vue](../modules/attendance/views/AttendanceView.vue):
+
+1. Kamera dinyalakan saat view dimount.
+2. Lokasi browser diminta bersamaan dengan kamera.
+3. Quality check dijalankan berkala dari frame video.
+4. User memilih `checkin` atau `checkout`.
+5. Saat submit, frontend menangkap satu frame base64 dan mengirim payload attendance.
+6. Hasil response ditampilkan sebagai status absensi dan evidence GPS.
+
+Aturan UX yang saat ini diterapkan:
+
+- submit diblok jika kamera belum ready
+- submit diblok jika GPS belum tersedia
+- submit diblok jika quality check belum accepted
+- submit diblok jika akurasi GPS berada pada kategori poor
+- frontend tidak menghitung radius validasi lokasi; backend/Odoo yang menentukan status lokasi final
+
+## 7. Composable Yang Dipakai
+
+### `useCamera()`
+
+Fungsi utama:
 
 - `startCamera(deviceId?)`
 - `stopCamera()`
-- `captureFrame(): Promise<string>` (base64)
-- state `isReady`, `stream`, `error`
+- `captureFrame()`
+- `attachVideoElement()`
 
-Praktik penting:
+State yang diekspos:
 
-- set `video.playsInline = true`
-- request resolusi moderat (misal 640x480) untuk latency rendah
-- cleanup stream pada unmount
+- `stream`
+- `isReady`
+- `isLoading`
+- `error`
+- `videoElement`
 
-## 8.1 Implementasi Geolocation Composable (Konsep)
+Perilaku penting:
 
-`useGeolocation.ts` sebaiknya menyediakan:
+- resolusi target kamera dioptimalkan ke sekitar 720px
+- `playsInline` diaktifkan
+- stream dihentikan saat unmount
+- `captureFrame()` menghasilkan `imageBase64`, `width`, dan `height`
+
+### `useGeolocation()`
+
+Fungsi utama:
 
 - `requestLocation()`
 - `clearLocation()`
-- state `coords`, `accuracy`, `loading`, `error`
 
-Gunakan `navigator.geolocation.getCurrentPosition()` dengan opsi:
+State yang diekspos:
 
-- `enableHighAccuracy: true`
-- `timeout: 10000`
-- `maximumAge: 0`
+- `latitude`
+- `longitude`
+- `accuracy`
+- `updatedAt`
+- `error`
+- `isLoading`
 
-Fallback UX yang disarankan:
+Perilaku penting:
 
-- jika GPS gagal didapat, tampilkan alasan dan blok attendance
-- jika akurasi terlalu buruk, minta user ulangi deteksi lokasi
-- tampilkan nilai akurasi aktual agar user paham kenapa attendance ditolak
+- memakai `navigator.geolocation.getCurrentPosition()`
+- `enableHighAccuracy` mengikuti env
+- timeout mengikuti env
+- jika geolocation tidak didukung, error ditampilkan langsung
 
-Threshold UX yang disarankan:
+### `useQualityCheck()`
 
-- `<= 20m`: sangat baik
-- `21m - 50m`: masih bisa dipakai, beri warning ringan
-- `> 50m`: minta user ambil ulang lokasi
+Quality check dihitung dari frame video, dengan hasil:
 
-## 9. Quality Gate di Frontend (Ringan)
+- `accepted`
+- `brightnessScore`
+- `blurScore`
+- `reasons`
 
-Sebelum upload, lakukan precheck:
+Threshold yang dipakai saat ini:
 
-- brightness tidak terlalu gelap/terang
-- blur kasar (optional)
-- face area berada di guide overlay
+- brightness terlalu rendah bila di bawah sekitar `0.28`
+- brightness terlalu tinggi bila di atas sekitar `0.9`
+- blur dianggap buruk bila di bawah sekitar `0.18`
 
-Catatan:
+## 8. State Management
 
-- quality gate final tetap di backend
-- frontend precheck hanya untuk UX dan efisiensi bandwidth
+Store absensi saat ini menyimpan:
 
-## 10. State Management Rekomendasi
+- `loading`
+- `error`
+- `actionType`
+- `lastResult`
 
-`enroll.store.ts`:
+Action yang tersedia:
 
-- selectedEmployee
-- sessionStatus
-- samplesAccepted
-- samplesRejected
-- lastSampleResult
+- `runAttendance()`
+- `setActionType()`
+- `clearResult()`
+- `clearError()`
 
-`attendance.store.ts`:
+Store ini hanya menangani absensi. Belum ada store enrollment, karena flow enrollment tidak ada di repo sekarang.
 
-- actionType
-- lastResult
-- loading
-- error
-- location
-- locationPermission
-- locationAccuracy
+## 9. Implementasi History
 
-## 11. Error Handling UX
+Halaman history saat ini melakukan:
 
-Kelompokkan error:
+- fetch history dari backend
+- filter by `employee_id`
+- filter by rentang tanggal
+- pagination client-side
+- detail modal untuk satu record
 
-- validation error (422): tampilkan pesan actionable
-- not found (404): data employee/perangkat tidak ditemukan
-- server error (500): tampilkan fallback + tombol retry
-- network error: auto-retry terbatas + notifikasi
-- geolocation denied: tampilkan instruksi aktivasi permission lokasi
-- geolocation timeout: beri opsi retry lokasi
+Data lokasi di history ditampilkan apa adanya, termasuk `location_status` bila backend mengirimkannya.
 
-Saran UX:
+## 10. Scaffold Permission dan Leave
 
-- tampilkan toast + area detail
-- simpan `request_id/event_id` jika ada, agar mudah tracing
-- tampilkan badge lokasi: `GPS ready`, `GPS denied`, `Low accuracy`
+Halaman request ijin dan cuti saat ini masih berupa scaffold terpisah agar struktur route dan layout siap untuk integrasi berikutnya.
 
-## 12. Strategi Retry Frontend
+Fokus implementasi berikutnya untuk dua modul ini adalah:
 
-Untuk endpoint sample/attendance:
+- form input yang sesuai alur Odoo
+- submission ke backend/adapter yang tepat
+- status approval dan history permintaan
 
-- retry maksimal 2 kali pada timeout/network error
-- tanpa retry untuk 4xx validation
-- gunakan backoff sederhana (500ms -> 1500ms)
+## 11. Error Handling dan Retry
 
-## 13. Keamanan Frontend
+Behavior API client saat ini:
 
-- jangan simpan secret di browser
-- gunakan token pendek (short-lived) jika auth diaktifkan
-- batasi data sensitif di localStorage
-- bersihkan frame image dari memory setelah request selesai
+- retry maksimal 2 kali
+- retry untuk timeout, network error, dan response 5xx
+- tidak retry untuk error validasi 4xx
+- backoff sederhana: 500ms lalu 1500ms
 
-## 14. Checklist Implementasi Vue
+UX error yang disarankan untuk mengikuti implementasi sekarang:
 
-- halaman enrollment
-- halaman attendance
-- device selector kamera
-- permission request untuk kamera dan lokasi
-- indikator kualitas real-time
-- indikator kualitas GPS / akurasi lokasi
-- progress accepted samples
-- hasil attendance + reason jika gagal
-- log/history viewer sederhana
+- validation error: tampilkan pesan yang bisa langsung diperbaiki user
+- network error: tampilkan fallback dan retry
+- geolocation denied: blok submit dan tampilkan instruksi permission
+- geolocation timeout: minta user refresh lokasi
+- GPS poor: tampilkan warning dan minta ambil ulang lokasi
 
-## 15. Contoh TypeScript Interface
+## 12. Interface TypeScript Yang Relevan
 
 ```ts
 export interface ApiEnvelope<T> {
@@ -290,22 +298,7 @@ export interface ApiEnvelope<T> {
   timestamp_utc: string
 }
 
-export interface EnrollmentSampleData {
-  sample_id: number
-  accepted: boolean
-  blur_score: number
-  brightness_score: number
-  face_count: number
-  detector_confidence: number
-  storage: {
-    local_path: string
-    local_url: string
-    object_url: string
-    odoo_attachment_id: string | null
-  }
-}
-
-export interface AttendanceRequestPayload {
+export interface AttendanceRequest {
   device_code?: string
   image_base64: string
   latitude?: number
@@ -314,77 +307,66 @@ export interface AttendanceRequestPayload {
   gps_provider?: string
 }
 
-export interface AttendanceResultData {
-  attempt_id: number
-  action: 'checkin' | 'checkout'
+export interface AttendanceResponseData {
+  attempt_id?: number
+  action?: 'checkin' | 'checkout'
   matched: boolean
   employee_id: string | null
-  similarity: number
-  quality_score: number
-  status: string
-  latitude: number | null
-  longitude: number | null
-  gps_accuracy_meters: number | null
+  similarity: number | null
+  quality_score?: number | null
+  status: 'checkin' | 'checkout' | 'not_matched' | string
+  latitude?: number | null
+  longitude?: number | null
+  gps_accuracy_meters?: number | null
   gps_provider?: string | null
+  location_status?: string | null
+  attendance_id?: number
+  reason?: string
+}
+
+export interface AttendanceHistoryItem {
+  id: number
+  employee_id: string
+  status: 'checkin' | 'checkout'
+  check_time_utc: string
+  confidence: number | null
+  similarity?: number | null
+  latitude?: number | null
+  longitude?: number | null
+  gps_accuracy_meters?: number | null
+  gps_provider?: string | null
+  location_status?: string | null
 }
 ```
 
-## 16. Testing Frontend yang Disarankan
+## 13. Checklist Implementasi
 
-Unit test:
+- absensi checkin/checkout
+- kamera preview
+- overlay guide wajah
+- indikator kualitas kamera
+- request permission lokasi
+- indikator akurasi GPS
+- riwayat absensi
+- detail event attendance
+- scaffold ijin dan cuti
 
-- composable camera lifecycle
-- API client parse envelope
-- store transition state
+## 14. Catatan Implementasi Repo Ini
 
-E2E test:
+- `AppShell` menyediakan layout utama, title per route, dan bottom navigation.
+- `AttendanceView` adalah halaman yang paling lengkap dan sudah menggabungkan kamera, geolocation, quality check, dan submit attendance.
+- `HistoryView` sudah membaca data GPS dan status lokasi dari backend.
+- `RequestPermissionView` dan `LeaveRequestView` masih placeholder yang menunggu alur bisnis berikutnya.
 
-- enrollment happy path
-- enrollment insufficient sample
-- attendance match success
-- attendance not matched
-- attendance gagal karena GPS permission denied
-- attendance gagal karena lokasi di luar radius
+Jika backend menambah field baru pada attendance atau history, update tipe di `src/types/api.ts` dan mapping di `src/api/attendance.ts` terlebih dahulu, lalu sesuaikan tampilan di modul terkait.
 
-## 17. Integrasi dengan Odoo UI (Opsional)
+## 15. Referensi File Utama
 
-Jika frontend ini di-embed atau terhubung ke Odoo:
-
-- kirim `employee_id` dari context Odoo ke view Vue
-- gunakan deep-link kembali ke form attendance Odoo setelah success
-- tampilkan link evidence image jika disediakan backend
-
-## 18. Catatan Praktis untuk Repo Ini
-
-Backend saat ini sudah mengembalikan metadata storage pada endpoint
-`enroll/sample`.
-
-Backend attendance juga sudah menerima dan mengembalikan field GPS:
-
-- `latitude`
-- `longitude`
-- `gps_accuracy_meters`
-- `gps_provider`
-
-Frontend cukup memanfaatkan field tersebut untuk:
-
-- preview quick link image (`local_url` / `object_url`)
-- menampilkan status attachment Odoo (`odoo_attachment_id`)
-- menampilkan bukti koordinat yang dikirim saat attendance
-- menyiapkan UX untuk hasil validasi radius dari Odoo pada tahap integrasi berikutnya
-
-## 19. Status Implementasi Backend Saat Ini
-
-Hal yang sudah tersedia di backend:
-
-- endpoint attendance menerima `latitude`, `longitude`, `gps_accuracy_meters`, `gps_provider`
-- response attendance mengembalikan field GPS tersebut
-- history attendance juga mengembalikan data GPS
-- endpoint sample enrollment mengembalikan metadata storage image
-
-Implikasi untuk frontend:
-
-- frontend tidak perlu menghitung radius sendiri
-- frontend cukup mengambil GPS terbaik yang tersedia dari browser/device
-- frontend perlu menampilkan hasil validasi lokasi jika nanti dikembalikan Odoo
-- frontend perlu menangani permission kamera dan lokasi sebagai syarat utama attendance
+- [src/router/index.ts](../router/index.ts) untuk daftar route aktif dan redirect root.
+- [src/components/common/AppShell.vue](../components/common/AppShell.vue) untuk navigasi dan layout aplikasi.
+- [src/modules/attendance/views/AttendanceView.vue](../modules/attendance/views/AttendanceView.vue) untuk flow kamera, GPS, quality check, dan submit absensi.
+- [src/modules/history/views/HistoryView.vue](../modules/history/views/HistoryView.vue) untuk filter, pagination, dan detail riwayat.
+- [src/stores/attendance.store.ts](../stores/attendance.store.ts) untuk state dan action submit attendance.
+- [src/api/attendance.ts](../api/attendance.ts) untuk endpoint checkin, checkout, dan history.
+- [src/api/client.ts](../api/client.ts) untuk request wrapper, timeout, dan retry.
+- [src/types/api.ts](../types/api.ts) untuk contract response yang dipakai UI.
