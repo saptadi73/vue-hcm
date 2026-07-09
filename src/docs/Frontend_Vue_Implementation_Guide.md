@@ -1,89 +1,101 @@
 # Frontend Vue Implementation Guide
 
-Dokumen ini menjelaskan implementasi frontend Vue.js yang saat ini ada di repo dan kontrak yang dipakai untuk integrasi ke backend HCM/Odoo.
+Dokumen ini adalah panduan implementasi frontend Vue.js untuk integrasi dengan FastAPI Face Attendance Service.
 
-## 1. Scope Saat Ini
+## 1. Tujuan Frontend
 
-Frontend ini fokus pada:
+Frontend bertanggung jawab untuk:
 
-- absensi wajah dengan kamera dan GPS
-- riwayat absensi dengan filter employee dan tanggal
-- scaffold halaman request ijin dan cuti
-- shell navigasi untuk mobile dan desktop
+- capture stream kamera
+- capture koordinat GPS user/device saat attendance
+- melakukan quality gate ringan sebelum upload
+- kirim image ke endpoint enrollment/attendance
+- menampilkan feedback real-time ke user
+- menangani retry dan status error secara jelas
 
-Bagian enrollment wajah yang ada di versi lama guide ini sudah tidak dipakai di struktur repo saat ini.
-
-## 2. Stack dan Struktur
-
-Stack yang dipakai:
+## 2. Stack yang Direkomendasikan
 
 - Vue 3 + Composition API
 - Vite
-- Pinia
-- Vue Router
-- Fetch wrapper berbasis `requestApi`
-- Tailwind CSS 4
+- Pinia (state management)
+- Axios atau Fetch wrapper
+- OpenCV.js (opsional untuk precheck)
 
-Struktur yang relevan saat ini:
+## 3. Struktur Folder Frontend yang Disarankan
 
 ```text
 src/
 ├── api/
+│   ├── client.ts
+│   ├── auth.ts
+│   ├── attendance.ts
+│   └── enroll.ts
 ├── components/
 │   ├── camera/
+│   │   ├── CameraPreview.vue
+│   │   ├── FaceGuideOverlay.vue
+│   │   └── QualityIndicator.vue
 │   └── common/
-├── composables/
 ├── modules/
+│   ├── auth/
+│   │   └── views/
+│   │       └── LoginView.vue
 │   ├── attendance/
 │   ├── history/
 │   ├── leave/
 │   └── requests/
-├── router/
 ├── stores/
+│   ├── auth.store.ts
+│   ├── enroll.store.ts
+│   └── attendance.store.ts
+├── composables/
+│   ├── useCamera.ts
+│   ├── useCapture.ts
+│   └── useQualityCheck.ts
 └── types/
+    └── api.ts
 ```
-
-## 3. Route Aktif
-
-Router saat ini mengarah ke:
-
-- `/attendance` untuk absensi
-- `/permission` untuk request ijin
-- `/leave` untuk request cuti
-- `/history` untuk riwayat absensi
-
-Root `/` redirect ke `/attendance`.
-
-`AppShell` menyediakan navigasi desktop dan mobile, serta judul halaman berdasarkan route aktif.
 
 ## 4. Konfigurasi Environment
 
-Environment variable yang dipakai frontend saat ini:
+Contoh `.env` frontend:
 
 ```env
 VITE_API_BASE_URL=http://127.0.0.1:8000
-VITE_REQUEST_TIMEOUT_MS=15000
-VITE_CAPTURE_FORMAT=image/jpeg
+VITE_CAPTURE_FORMAT=image/png
 VITE_CAPTURE_QUALITY=0.9
+VITE_SAMPLE_MIN_COUNT=5
+VITE_REQUEST_TIMEOUT_MS=15000
 VITE_GEOLOCATION_ENABLE_HIGH_ACCURACY=true
 VITE_GEOLOCATION_TIMEOUT_MS=10000
 ```
 
-Catatan:
+Catatan inference:
 
-- `VITE_CAPTURE_FORMAT` dan `VITE_CAPTURE_QUALITY` dipakai oleh `useCamera()` saat membuat base64 frame.
-- `VITE_GEOLOCATION_ENABLE_HIGH_ACCURACY` dan `VITE_GEOLOCATION_TIMEOUT_MS` dipakai oleh `useGeolocation()`.
-- `VITE_REQUEST_TIMEOUT_MS` dipakai oleh `requestApi()`.
+- Frontend tidak perlu mengetahui detail model ONNX.
+- Backend akan mengembalikan `embedding_provider` pada hasil enrollment/attendance.
+- Nilai provider dapat berupa `visual` atau `onnx`; gunakan hanya untuk badge/debug/admin UI, bukan untuk logic bisnis frontend.
 
-## 5. Kontrak API Yang Dipakai
+## 5. Kontrak API yang Digunakan Frontend
 
-API client saat ini memakai envelope standar:
+Endpoint utama:
+
+- `POST /api/v1/auth/login`
+- `POST /api/v1/face/enroll/start`
+- `POST /api/v1/face/enroll/sample`
+- `POST /api/v1/face/enroll/finish`
+- `GET /api/v1/face/enroll/{employee_id}`
+- `POST /api/v1/attendance/checkin`
+- `POST /api/v1/attendance/checkout`
+- `GET /api/v1/attendance/history`
+
+Envelope response standar:
 
 ```json
 {
   "success": true,
-  "code": "OK",
-  "message": "Success",
+  "code": "SAMPLE_SAVED",
+  "message": "Sample saved",
   "data": {},
   "errors": null,
   "meta": null,
@@ -91,22 +103,134 @@ API client saat ini memakai envelope standar:
 }
 ```
 
-Endpoint yang aktif di frontend:
+## 5.1 Login Odoo via FastAPI
 
-- `POST /api/v1/attendance/checkin`
-- `POST /api/v1/attendance/checkout`
-- `GET /api/v1/attendance/history`
+Frontend Vue mengirim username/password ke FastAPI. FastAPI meneruskan credential
+tersebut ke Odoo JSON-RPC endpoint `/web/session/authenticate`.
 
-Query opsional untuk history:
+Payload:
 
-- `employee_id`
+```json
+{
+  "odoo_base_url": "http://127.0.0.1:8070",
+  "odoo_db": "jabung",
+  "username": "user@example.com",
+  "password": "secret"
+}
+```
 
-Payload absensi yang dipakai:
+Response sukses:
+
+```json
+{
+  "uid": 7,
+  "username": "user@example.com",
+  "name": "Demo User",
+  "session_id": "odoo-session-id",
+  "odoo_base_url": "http://127.0.0.1:8070",
+  "odoo_db": "jabung",
+  "employee_resolved": true,
+  "employee_map_id": 12,
+  "employee": {
+    "id": 34,
+    "name": "Demo Employee",
+    "barcode": "EMP034",
+    "work_email": "user@example.com",
+    "user_id": 7
+  },
+  "user_context": {
+    "lang": "en_US",
+    "tz": "Asia/Jakarta"
+  }
+}
+```
+
+Catatan keamanan:
+
+- Password tidak disimpan di FastAPI.
+- Login page frontend perlu menyediakan input/select untuk `odoo_base_url` dan `odoo_db`.
+- Jika `odoo_base_url` atau `odoo_db` tidak dikirim, FastAPI memakai nilai default dari `.env`.
+- FastAPI akan mencoba mencari `hr.employee` berdasarkan `res.users.id` atau email login.
+- Jika ditemukan, FastAPI membuat/memperbarui mapping lokal di `face_employee_map`.
+- Foto enrollment/template tetap direlasikan ke employee, tetapi mapping tersebut menyimpan `odoo_user_id` dan `login_email` sebagai relasi ke user login.
+- Gunakan HTTPS untuk frontend ke FastAPI dan FastAPI ke Odoo.
+- Simpan `session_id` hanya jika memang diperlukan frontend; perlakukan seperti secret.
+
+Implementasi frontend yang disarankan:
+
+- sediakan route `/login` sebagai entry point aplikasi
+- simpan sesi login di `sessionStorage` agar hilang saat tab/browser ditutup
+- proteksi route attendance, history, ijin, dan cuti agar hanya bisa diakses setelah login
+- sediakan tombol logout untuk menghapus sesi lokal dan kembali ke halaman login
+- jika backend mengembalikan `401` atau `403`, hapus sesi lokal lalu redirect kembali ke login
+- tampilkan identitas user login dan tenant Odoo aktif pada header aplikasi untuk memperjelas konteks sesi
+
+## 6. Alur Enrollment di Frontend
+
+1. User memilih employee.
+2. Frontend panggil `enroll/start`.
+3. Frontend capture beberapa frame (target minimal 5 accepted sample).
+4. Tiap frame dikirim ke `enroll/sample`.
+5. Frontend baca hasil accepted/rejected dari response.
+6. Jika accepted mencukupi, panggil `enroll/finish`.
+
+Jika aplikasi dipakai untuk self-service attendance, employee sebaiknya diambil dari hasil login (`data.employee.id`), bukan dipilih bebas oleh user. Pilihan employee bebas hanya cocok untuk mode admin/HR enrollment.
+
+Untuk memperjelas konteks self-service, halaman attendance sebaiknya menampilkan sesi Odoo aktif, tenant yang dipakai, dan status apakah employee berhasil ter-resolve dari user login.
+
+Jika `employee_resolved` bernilai `false`, frontend sebaiknya memblok submit attendance sampai mapping user Odoo ke employee valid kembali di backend.
+
+Data penting dari `enroll/sample` response:
+
+- `data.accepted`
+- `data.reason_codes`
+- `data.blur_score`
+- `data.brightness_score`
+- `data.storage.local_url`
+- `data.storage.object_url`
+- `data.storage.odoo_attachment_id`
+
+Data penting dari `enroll/finish` response:
+
+- `data.employee_id`
+- `data.accepted_samples`
+- `data.templates_created`
+- `data.embedding_provider`
+- `data.status`
+
+Catatan penting:
+
+- Upload 5-10 foto karyawan tidak mengubah file model `.onnx`.
+- Foto yang diterima backend akan dikonversi menjadi embedding/template dan disimpan di database.
+- Jika model `.onnx` diganti atau provider berubah, lakukan enrollment ulang semua employee agar template lama tidak bercampur dengan template provider baru.
+
+## 7. Alur Attendance di Frontend
+
+1. User pilih aksi checkin/checkout.
+2. Ambil koordinat GPS via browser geolocation API.
+3. Capture satu frame berkualitas baik.
+4. Kirim image + koordinat GPS ke endpoint attendance.
+5. Tampilkan hasil:
+   - matched / not matched
+   - employee_id
+   - similarity
+   - status
+
+- status lokasi jika dikembalikan sistem Odoo/backend
+
+Rekomendasi flow bisnis frontend:
+
+- jangan izinkan submit attendance jika permission lokasi ditolak
+- jangan izinkan submit jika `coords` belum tersedia
+- jika akurasi terlalu buruk, tampilkan peringatan dan minta user retry
+- kirim metadata GPS apa adanya ke backend, biarkan Odoo menentukan valid/tidak berdasarkan radius
+
+Payload attendance yang direkomendasikan dari frontend:
 
 ```json
 {
   "device_code": "CAM-001",
-  "image_base64": "data:image/jpeg;base64,...",
+  "image_base64": "...",
   "latitude": -6.1753924,
   "longitude": 106.8271528,
   "gps_accuracy_meters": 8.75,
@@ -114,178 +238,146 @@ Payload absensi yang dipakai:
 }
 ```
 
-Field response yang harus di-handle frontend:
+Contoh field response attendance yang harus di-handle frontend:
 
-- `attempt_id`
-- `action`
-- `matched`
-- `employee_id`
-- `similarity`
-- `quality_score`
-- `status`
-- `latitude`
-- `longitude`
-- `gps_accuracy_meters`
-- `gps_provider`
-- `location_status`
-- `attendance_id`
-- `reason`
+```json
+{
+  "attempt_id": 3,
+  "action": "checkin",
+  "matched": true,
+  "employee_id": "EMP001",
+  "similarity": 0.98,
+  "quality_score": 3200.5,
+  "embedding_provider": "onnx",
+  "odoo_sync_status": "success",
+  "odoo_attendance_id": "4567",
+  "status": "success",
+  "latitude": -6.1753924,
+  "longitude": 106.8271528,
+  "gps_accuracy_meters": 8.75
+}
+```
 
-Field history yang dipakai di UI:
+## 8. Implementasi Camera Composable (Konsep)
 
-- `id`
-- `employee_id`
-- `status`
-- `check_time_utc`
-- `confidence`
-- `similarity`
-- `latitude`
-- `longitude`
-- `gps_accuracy_meters`
-- `gps_provider`
-- `location_status`
-
-## 6. Alur Attendance
-
-Alur pada [AttendanceView.vue](../modules/attendance/views/AttendanceView.vue):
-
-1. Kamera dinyalakan saat view dimount.
-2. Lokasi browser diminta bersamaan dengan kamera.
-3. Quality check dijalankan berkala dari frame video.
-4. User memilih `checkin` atau `checkout`.
-5. Saat submit, frontend menangkap satu frame base64 dan mengirim payload attendance.
-6. Hasil response ditampilkan sebagai status absensi dan evidence GPS.
-
-Aturan UX yang saat ini diterapkan:
-
-- submit diblok jika kamera belum ready
-- submit diblok jika GPS belum tersedia
-- submit diblok jika quality check belum accepted
-- submit diblok jika akurasi GPS berada pada kategori poor
-- frontend tidak menghitung radius validasi lokasi; backend/Odoo yang menentukan status lokasi final
-
-## 7. Composable Yang Dipakai
-
-### `useCamera()`
-
-Fungsi utama:
+`useCamera.ts` sebaiknya menyediakan:
 
 - `startCamera(deviceId?)`
 - `stopCamera()`
-- `captureFrame()`
-- `attachVideoElement()`
+- `captureFrame(): Promise<string>` (base64)
+- state `isReady`, `stream`, `error`
 
-State yang diekspos:
+Praktik penting:
 
-- `stream`
-- `isReady`
-- `isLoading`
-- `error`
-- `videoElement`
+- set `video.playsInline = true`
+- request resolusi moderat (misal 640x480) untuk latency rendah
+- cleanup stream pada unmount
 
-Perilaku penting:
+## 8.1 Implementasi Geolocation Composable (Konsep)
 
-- resolusi target kamera dioptimalkan ke sekitar 720px
-- `playsInline` diaktifkan
-- stream dihentikan saat unmount
-- `captureFrame()` menghasilkan `imageBase64`, `width`, dan `height`
-
-### `useGeolocation()`
-
-Fungsi utama:
+`useGeolocation.ts` sebaiknya menyediakan:
 
 - `requestLocation()`
 - `clearLocation()`
+- state `coords`, `accuracy`, `loading`, `error`
 
-State yang diekspos:
+Gunakan `navigator.geolocation.getCurrentPosition()` dengan opsi:
 
-- `latitude`
-- `longitude`
-- `accuracy`
-- `updatedAt`
-- `error`
-- `isLoading`
+- `enableHighAccuracy: true`
+- `timeout: 10000`
+- `maximumAge: 0`
 
-Perilaku penting:
+Fallback UX yang disarankan:
 
-- memakai `navigator.geolocation.getCurrentPosition()`
-- `enableHighAccuracy` mengikuti env
-- timeout mengikuti env
-- jika geolocation tidak didukung, error ditampilkan langsung
+- jika GPS gagal didapat, tampilkan alasan dan blok attendance
+- jika akurasi terlalu buruk, minta user ulangi deteksi lokasi
+- tampilkan nilai akurasi aktual agar user paham kenapa attendance ditolak
 
-### `useQualityCheck()`
+Threshold UX yang disarankan:
 
-Quality check dihitung dari frame video, dengan hasil:
+- `<= 20m`: sangat baik
+- `21m - 50m`: masih bisa dipakai, beri warning ringan
+- `> 50m`: minta user ambil ulang lokasi
 
-- `accepted`
-- `brightnessScore`
-- `blurScore`
-- `reasons`
+## 9. Quality Gate di Frontend (Ringan)
 
-Threshold yang dipakai saat ini:
+Sebelum upload, lakukan precheck:
 
-- brightness terlalu rendah bila di bawah sekitar `0.28`
-- brightness terlalu tinggi bila di atas sekitar `0.9`
-- blur dianggap buruk bila di bawah sekitar `0.18`
+- brightness tidak terlalu gelap/terang
+- blur kasar (optional)
+- face area berada di guide overlay
 
-## 8. State Management
+Catatan:
 
-Store absensi saat ini menyimpan:
+- quality gate final tetap di backend
+- frontend precheck hanya untuk UX dan efisiensi bandwidth
 
-- `loading`
-- `error`
-- `actionType`
-- `lastResult`
+## 10. State Management Rekomendasi
 
-Action yang tersedia:
+`enroll.store.ts`:
 
-- `runAttendance()`
-- `setActionType()`
-- `clearResult()`
-- `clearError()`
+- selectedEmployee
+- sessionStatus
+- samplesAccepted
+- samplesRejected
+- lastSampleResult
 
-Store ini hanya menangani absensi. Belum ada store enrollment, karena flow enrollment tidak ada di repo sekarang.
+`attendance.store.ts`:
 
-## 9. Implementasi History
+- actionType
+- lastResult
+- loading
+- error
+- location
+- locationPermission
+- locationAccuracy
 
-Halaman history saat ini melakukan:
+## 11. Error Handling UX
 
-- fetch history dari backend
-- filter by `employee_id`
-- filter by rentang tanggal
-- pagination client-side
-- detail modal untuk satu record
+Kelompokkan error:
 
-Data lokasi di history ditampilkan apa adanya, termasuk `location_status` bila backend mengirimkannya.
+- validation error (422): tampilkan pesan actionable
+- not found (404): data employee/perangkat tidak ditemukan
+- server error (500): tampilkan fallback + tombol retry
+- network error: auto-retry terbatas + notifikasi
+- geolocation denied: tampilkan instruksi aktivasi permission lokasi
+- geolocation timeout: beri opsi retry lokasi
 
-## 10. Scaffold Permission dan Leave
+Saran UX:
 
-Halaman request ijin dan cuti saat ini masih berupa scaffold terpisah agar struktur route dan layout siap untuk integrasi berikutnya.
+- tampilkan toast + area detail
+- simpan `request_id/event_id` jika ada, agar mudah tracing
+- tampilkan badge lokasi: `GPS ready`, `GPS denied`, `Low accuracy`
 
-Fokus implementasi berikutnya untuk dua modul ini adalah:
+## 12. Strategi Retry Frontend
 
-- form input yang sesuai alur Odoo
-- submission ke backend/adapter yang tepat
-- status approval dan history permintaan
+Untuk endpoint sample/attendance:
 
-## 11. Error Handling dan Retry
+- retry maksimal 2 kali pada timeout/network error
+- tanpa retry untuk 4xx validation
+- gunakan backoff sederhana (500ms -> 1500ms)
 
-Behavior API client saat ini:
+## 13. Keamanan Frontend
 
-- retry maksimal 2 kali
-- retry untuk timeout, network error, dan response 5xx
-- tidak retry untuk error validasi 4xx
-- backoff sederhana: 500ms lalu 1500ms
+- jangan simpan secret di browser
+- gunakan token pendek (short-lived) jika auth diaktifkan
+- batasi data sensitif di localStorage
+- bersihkan frame image dari memory setelah request selesai
 
-UX error yang disarankan untuk mengikuti implementasi sekarang:
+## 14. Checklist Implementasi Vue
 
-- validation error: tampilkan pesan yang bisa langsung diperbaiki user
-- network error: tampilkan fallback dan retry
-- geolocation denied: blok submit dan tampilkan instruksi permission
-- geolocation timeout: minta user refresh lokasi
-- GPS poor: tampilkan warning dan minta ambil ulang lokasi
+- halaman login Odoo
+- halaman enrollment
+- halaman attendance
+- device selector kamera
+- permission request untuk kamera dan lokasi
+- indikator kualitas real-time
+- indikator kualitas GPS / akurasi lokasi
+- progress accepted samples
+- hasil attendance + reason jika gagal
+- log/history viewer sederhana
 
-## 12. Interface TypeScript Yang Relevan
+## 15. Contoh TypeScript Interface
 
 ```ts
 export interface ApiEnvelope<T> {
@@ -298,7 +390,60 @@ export interface ApiEnvelope<T> {
   timestamp_utc: string
 }
 
-export interface AttendanceRequest {
+export interface AuthLoginRequest {
+  username: string
+  password: string
+  odoo_base_url?: string
+  odoo_db?: string
+}
+
+export interface AuthLoginResponseData {
+  uid: number
+  username: string
+  name: string
+  session_id: string
+  odoo_base_url: string
+  odoo_db: string
+  employee_resolved: boolean
+  employee_map_id?: number | null
+  employee?: {
+    id: number
+    name: string
+    barcode?: string | null
+    work_email?: string | null
+    user_id?: number | null
+  } | null
+  user_context?: {
+    lang?: string | null
+    tz?: string | null
+  } | null
+}
+
+export interface EnrollmentSampleData {
+  sample_id: number
+  accepted: boolean
+  reason_codes: string[]
+  blur_score: number
+  brightness_score: number
+  face_count: number
+  detector_confidence: number
+  storage: {
+    local_path: string
+    local_url: string
+    object_url: string
+    odoo_attachment_id: string | null
+  }
+}
+
+export interface EnrollmentFinishData {
+  employee_id: string
+  accepted_samples: number
+  templates_created: number
+  embedding_provider: 'visual' | 'onnx'
+  status: string
+}
+
+export interface AttendanceRequestPayload {
   device_code?: string
   image_base64: string
   latitude?: number
@@ -307,66 +452,88 @@ export interface AttendanceRequest {
   gps_provider?: string
 }
 
-export interface AttendanceResponseData {
-  attempt_id?: number
-  action?: 'checkin' | 'checkout'
+export interface AttendanceResultData {
+  attempt_id: number
+  action: 'checkin' | 'checkout'
   matched: boolean
   employee_id: string | null
-  similarity: number | null
-  quality_score?: number | null
-  status: 'checkin' | 'checkout' | 'not_matched' | string
-  latitude?: number | null
-  longitude?: number | null
-  gps_accuracy_meters?: number | null
+  similarity: number
+  quality_score: number
+  embedding_provider: 'visual' | 'onnx'
+  odoo_sync_status: string | null
+  odoo_attendance_id: string | null
+  status: string
+  latitude: number | null
+  longitude: number | null
+  gps_accuracy_meters: number | null
   gps_provider?: string | null
-  location_status?: string | null
-  attendance_id?: number
-  reason?: string
-}
-
-export interface AttendanceHistoryItem {
-  id: number
-  employee_id: string
-  status: 'checkin' | 'checkout'
-  check_time_utc: string
-  confidence: number | null
-  similarity?: number | null
-  latitude?: number | null
-  longitude?: number | null
-  gps_accuracy_meters?: number | null
-  gps_provider?: string | null
-  location_status?: string | null
 }
 ```
 
-## 13. Checklist Implementasi
+## 16. Testing Frontend yang Disarankan
 
-- absensi checkin/checkout
-- kamera preview
-- overlay guide wajah
-- indikator kualitas kamera
-- request permission lokasi
-- indikator akurasi GPS
-- riwayat absensi
-- detail event attendance
-- scaffold ijin dan cuti
+Unit test:
 
-## 14. Catatan Implementasi Repo Ini
+- composable camera lifecycle
+- API client parse envelope
+- store transition state
 
-- `AppShell` menyediakan layout utama, title per route, dan bottom navigation.
-- `AttendanceView` adalah halaman yang paling lengkap dan sudah menggabungkan kamera, geolocation, quality check, dan submit attendance.
-- `HistoryView` sudah membaca data GPS dan status lokasi dari backend.
-- `RequestPermissionView` dan `LeaveRequestView` masih placeholder yang menunggu alur bisnis berikutnya.
+E2E test:
 
-Jika backend menambah field baru pada attendance atau history, update tipe di `src/types/api.ts` dan mapping di `src/api/attendance.ts` terlebih dahulu, lalu sesuaikan tampilan di modul terkait.
+- enrollment happy path
+- enrollment insufficient sample
+- attendance match success
+- attendance not matched
+- attendance gagal karena GPS permission denied
+- attendance gagal karena lokasi di luar radius
 
-## 15. Referensi File Utama
+## 17. Integrasi dengan Odoo UI (Opsional)
 
-- [src/router/index.ts](../router/index.ts) untuk daftar route aktif dan redirect root.
-- [src/components/common/AppShell.vue](../components/common/AppShell.vue) untuk navigasi dan layout aplikasi.
-- [src/modules/attendance/views/AttendanceView.vue](../modules/attendance/views/AttendanceView.vue) untuk flow kamera, GPS, quality check, dan submit absensi.
-- [src/modules/history/views/HistoryView.vue](../modules/history/views/HistoryView.vue) untuk filter, pagination, dan detail riwayat.
-- [src/stores/attendance.store.ts](../stores/attendance.store.ts) untuk state dan action submit attendance.
-- [src/api/attendance.ts](../api/attendance.ts) untuk endpoint checkin, checkout, dan history.
-- [src/api/client.ts](../api/client.ts) untuk request wrapper, timeout, dan retry.
-- [src/types/api.ts](../types/api.ts) untuk contract response yang dipakai UI.
+Jika frontend ini di-embed atau terhubung ke Odoo:
+
+- kirim `employee_id` dari context Odoo ke view Vue
+- gunakan deep-link kembali ke form attendance Odoo setelah success
+- tampilkan link evidence image jika disediakan backend
+
+## 18. Catatan Praktis untuk Repo Ini
+
+Backend saat ini sudah mengembalikan metadata storage pada endpoint
+`enroll/sample`.
+
+Backend attendance juga sudah menerima dan mengembalikan field GPS:
+
+- `latitude`
+- `longitude`
+- `gps_accuracy_meters`
+- `gps_provider`
+
+Frontend cukup memanfaatkan field tersebut untuk:
+
+- preview quick link image (`local_url` / `object_url`)
+- menampilkan status attachment Odoo (`odoo_attachment_id`)
+- menampilkan bukti koordinat yang dikirim saat attendance
+- menyiapkan UX untuk hasil validasi radius dari Odoo pada tahap integrasi berikutnya
+
+## 19. Status Implementasi Backend Saat Ini
+
+Hal yang sudah tersedia di backend:
+
+- endpoint attendance menerima `latitude`, `longitude`, `gps_accuracy_meters`, `gps_provider`
+- response attendance mengembalikan field GPS tersebut
+- response attendance mengembalikan `embedding_provider`
+- response attendance mengembalikan status sinkronisasi Odoo (`odoo_sync_status`, `odoo_attendance_id`) jika match berhasil
+- history attendance juga mengembalikan data GPS
+- endpoint sample enrollment mengembalikan metadata storage image
+- endpoint sample enrollment mengembalikan `reason_codes` untuk sample yang ditolak
+- endpoint finish enrollment membuat multi-template dari semua sample valid, bukan hanya satu foto
+
+Implikasi untuk frontend:
+
+- frontend tidak perlu menghitung radius sendiri
+- frontend cukup mengambil GPS terbaik yang tersedia dari browser/device
+- frontend perlu menampilkan hasil validasi lokasi jika nanti dikembalikan Odoo
+- frontend perlu menangani permission kamera dan lokasi sebagai syarat utama attendance
+
+Roadmap migrasi inferensi backend yang menjadi acuan frontend ada di:
+
+- `docs/Inference_Pipeline_Roadmap.md`

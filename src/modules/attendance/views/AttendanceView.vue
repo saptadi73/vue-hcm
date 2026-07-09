@@ -9,7 +9,9 @@ import { useCamera } from '@/composables/useCamera'
 import { useGeolocation } from '@/composables/useGeolocation'
 import { useQualityCheck, type QualityCheckResult } from '@/composables/useQualityCheck'
 import { useAttendanceStore } from '@/stores/attendance.store'
+import { useAuthStore } from '@/stores/auth.store'
 
+const authStore = useAuthStore()
 const attendanceStore = useAttendanceStore()
 const {
   stream,
@@ -86,6 +88,31 @@ const gpsBadge = computed(() => {
   return { label: 'GPS not ready', className: 'bg-slate-100 text-slate-700' }
 })
 
+const employeeMappingBadge = computed(() => {
+  if (!authStore.session) {
+    return {
+      label: 'Tidak ada sesi login',
+      className: 'bg-slate-100 text-slate-700',
+    }
+  }
+
+  if (authStore.session.employee_resolved && authStore.session.employee) {
+    return {
+      label: 'Employee terhubung',
+      className: 'bg-emerald-100 text-emerald-700',
+    }
+  }
+
+  return {
+    label: 'Employee belum ter-resolve',
+    className: 'bg-amber-100 text-amber-700',
+  }
+})
+
+const hasResolvedEmployee = computed(() => {
+  return Boolean(authStore.session?.employee_resolved && authStore.session.employee)
+})
+
 function locationStatusUi(status?: string | null): { label: string; className: string } {
   const normalized = (status ?? '').toLowerCase()
 
@@ -114,6 +141,10 @@ function locationStatusUi(status?: string | null): { label: string; className: s
 
 const canSubmitAttendance = computed(() => {
   if (attendanceStore.loading || !isReady.value || !deviceCode.value.trim()) {
+    return false
+  }
+
+  if (!hasResolvedEmployee.value) {
     return false
   }
 
@@ -233,6 +264,13 @@ onBeforeUnmount(() => {
           </select>
         </label>
       </div>
+
+      <p
+        v-if="!hasResolvedEmployee"
+        class="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-700"
+      >
+        Submit absensi dikunci sampai akun Odoo ini terhubung ke employee yang valid di backend.
+      </p>
     </SectionCard>
 
     <div class="grid gap-4 xl:grid-cols-[1.35fr_1fr]">
@@ -276,6 +314,50 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="space-y-4">
+        <SectionCard
+          title="Sesi Odoo Aktif"
+          subtitle="Konteks login ini dipakai untuk self-service attendance dan sinkronisasi ke Odoo."
+        >
+          <div class="space-y-2 text-sm text-slate-600">
+            <p>
+              <span class="font-semibold text-slate-800">User:</span>
+              {{ authStore.userDisplayName }}
+            </p>
+            <p>
+              <span class="font-semibold text-slate-800">Login:</span>
+              {{ authStore.userSecondaryText ?? '-' }}
+            </p>
+            <p>
+              <span class="font-semibold text-slate-800">Tenant:</span>
+              {{ authStore.tenantLabel ?? '-' }}
+            </p>
+            <p>
+              <span class="font-semibold text-slate-800">Employee Mapping:</span>
+              <span
+                class="ml-2 rounded-full px-2 py-1 text-xs font-semibold"
+                :class="employeeMappingBadge.className"
+              >
+                {{ employeeMappingBadge.label }}
+              </span>
+            </p>
+            <p>
+              <span class="font-semibold text-slate-800">Employee ID:</span>
+              {{ authStore.session?.employee?.id ?? '-' }}
+            </p>
+            <p>
+              <span class="font-semibold text-slate-800">Employee Name:</span>
+              {{ authStore.session?.employee?.name ?? '-' }}
+            </p>
+            <p
+              v-if="authStore.session && !authStore.session.employee_resolved"
+              class="rounded-xl bg-amber-50 px-3 py-2 text-amber-700"
+            >
+              Login Odoo berhasil, tetapi backend belum menemukan relasi employee untuk user ini.
+              Attendance self-service dikunci sampai mapping employee diperbaiki di backend.
+            </p>
+          </div>
+        </SectionCard>
+
         <QualityIndicator
           :accepted="quality.accepted"
           :brightness-score="quality.brightnessScore"
